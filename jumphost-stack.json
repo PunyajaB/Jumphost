@@ -1,0 +1,192 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Resources": {
+        "IAMRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": "jumphost-ec2-iam-role",
+                "Description": "IAM role with s3 read only access,ssm access and ec2 full access",
+                "Path": "/",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess",
+                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+                    "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+                ],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "jumphost-ec2-iam-role"
+                    },
+                    {
+                        "Key": "Purpose",
+                        "Value": "Business"
+                    }
+                ]
+            }
+        },
+        "IAMRoleInstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "InstanceProfileName": "jumphost-ec2-iam-instance-profile-role",
+                "Path": "/",
+                "Roles": [
+                    {
+                        "Ref": "IAMRole"
+                    }
+                ]
+            }
+        },
+        "InstanceSecurityGroup" : {
+            "Type" : "AWS::EC2::SecurityGroup",
+            "Properties" : {
+                "GroupDescription" : "Allow http to client host",
+                "Vpc_id" : "vpc-0687380e5e42ff7cc",
+                "SecurityGroupIngress" : [{
+                 "IpProtocol" : "tcp",
+                    "FromPort" : 22,
+                    "ToPort" : 22,
+                    "CidrIp" : "163.116.205.118/32"},
+                    {"IpProtocol" : "tcp",
+                    "FromPort" : 3389,
+                    "ToPort" : 3389,
+                    "CidrIp" : "115.112.37.252/32"
+                    },
+                    {
+                    "IpProtocol" : "tcp",
+                    "FromPort" : 3389,
+                    "ToPort" : 3389,
+                    "CidrIp" : "163.116.205.118/32"
+                }],
+                "SecurityGroupEgress" : [{
+                 "IpProtocol" : "tcp",
+                    "FromPort" : 80,
+                    "ToPort" : 80,
+                    "CidrIp" : "10.0.0.0/0"
+                }]
+            }
+        },
+        "EC2Instance" : {
+            "Type" :"AWS::EC2::Instance",
+            "Properties" :{
+                "ImageId" : "ami-090cd270d78333bbe",
+                "IamInstanceProfile" : {"Ref" : "IAMRoleInstanceProfile"},
+                "NetworkInterfaces" : [{
+                    "AssociatePublicIpAddress" : "True",
+                    "DeleteOnTermination" : "True",
+                    "SubnetId": "subnet-06501c0ff7b512ebe",
+                    "DeviceIndex" : "0",
+                    "GroupSet" : [ { "Ref" : "InstanceSecurityGroup" } ]
+               }],
+                "KeyName": "jumphost-automation-ec2",
+                "InstanceType" : "t3.medium",
+                "UserData" : { "Fn::Base64" : { "Fn::Join" : ["", [
+                    "<powershell>\n",
+                    "$Password = ConvertTo-SecureString \"AntBlackfun@071023\" -AsPlainText -Force\n",
+                    "New-LocalUser \"PBirage\" -Password $Password -FullName \"Punyaja Birage\" -Description \"Jumphost Local User\" \n",
+                    "Add-LocalGroupMember -Group \"Administrators\" -Member \"PBirage\"\n",
+                    "</powershell>"]]}},
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "jumphost-ec2-instance"
+                    },
+                    {
+                        "Key": "Purpose",
+                        "Value": "Business"
+                    }
+                ]                             
+                
+            }
+        },
+
+        "EC2TerminateEventBridgeIAMRole":{
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": "event-bridge-iam-role",
+                "Description": "IAM role for event bridge",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "events.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Policies" :[
+                    {
+                        "PolicyName": "Terminate-ec2",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Sid": "CloudWatchEventsBuiltInTargetExecutionAccess",
+                                    "Effect": "Allow",
+                                    "Action":[ 
+                                        "ec2:RebootInstances",
+                                        "ec2:StopInstances",
+                                        "ec2:TerminateInstances"],
+                                    "Resource":{"Fn::Join": ["", ["arn:aws:ec2:", {"Ref": "AWS::Region"}, ":", {"Ref": "AWS::AccountId"}, ":instance/", {"Ref" :"EC2Instance"}]]}
+                                }
+                            ]
+                        }
+                    }]
+                }
+            },
+
+        "EC2TerminateEventBridge":{
+            "Type" : "AWS::Events::Rule",
+            "Properties" : {
+
+                "Name" : "ec2-instance-termination",
+                "Description" : "Terminates EC2 Instance after a specific time",
+                "ScheduleExpression" : "rate(2 minutes)",
+                "State" : "ENABLED",
+                "EventBusName": "default",
+     
+                "EventPattern" : {
+                    "source": ["aws.ec2"],
+                    "detail-type": ["EC2 Instance State-change Notification"],
+                    "detail": {
+                        "state": ["running"],
+                        "instance-id": [{"Ref" : "EC2Instance"}]
+                    }
+                },
+                
+                "Targets" : [{
+                    "Id" : "Id123",
+                    "Input": {"Fn::Join": ["", ["\"", {"Ref": "EC2Instance"}, "\""]]},
+                    "Arn": {"Fn::Join": ["", ["arn:aws:events:", {"Ref": "AWS::Region"}, ":", {"Ref": "AWS::AccountId"}, ":target/stop-instance"]]},
+                    "RoleArn" : {"Fn::GetAtt": ["EC2TerminateEventBridgeIAMRole","Arn"]},
+                    "RetryPolicy": {
+                        "MaximumRetryAttempts": 1,
+                        "MaximumEventAgeInSeconds": 60
+                      }
+                }] 
+            }
+        }
+    }
+}
